@@ -12,20 +12,43 @@ const db = new Database({
   apiKey: "K7RI5UnXq4h2femzx357fBSumYj7mSdodIuE",
 });
 
-await db.connect();
-console.log("Connected to FastDB (c1100cc1-6193-4a30-bf4b-e8dc212243f0)");
+async function connectToFastDb() {
+  try {
+    console.log(`Connecting to FastDB (databaseId: ${db.databaseId})...`);
+    await db.connect();
+    console.log(`Connected to FastDB (${db.databaseId})`);
+  } catch (err) {
+    console.error("FastDB connection error on startup:", err.message);
+    console.warn(
+      "Tip: If running on the Oracle instance hosting FastDB, run with DB_SERVER_URL='http://127.0.0.1:5500' to avoid public IP hairpinning."
+    );
+  }
+}
+
+// Connect asynchronously so server startup is never blocked
+connectToFastDb();
 
 if (db.socket) {
   db.socket.on("connect", () => {
-    db.connect().catch((err) =>
-      console.error("FastDB reconnect error:", err.message)
-    );
+    console.log("FastDB socket connected. Verifying database session...");
+    db.connect()
+      .then(() => console.log("FastDB session verified."))
+      .catch((err) =>
+        console.error("FastDB reconnect error:", err.message)
+      );
+  });
+  db.socket.on("connect_error", (err) => {
+    console.error("FastDB socket connection error:", err.message);
   });
 }
 
 async function ensureDbConnected() {
   if (!db.access) {
-    await db.connect();
+    try {
+      await db.connect();
+    } catch {
+      // Reconnection handled via timeout in socket.helper
+    }
   }
 }
 
@@ -476,9 +499,18 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+app.get("/health", async (_req, res) => {
+  res.json({
+    status: "ok",
+    databaseConnected: Boolean(db.access),
+    port,
+    uptime: process.uptime(),
+  });
+});
+
 app.get("/api/users", async (_req, res) => {
   try {
-    const users = await db.collection("users").get();
+    const users = await getCollectionDocs("users");
     res.json(users);
   } catch (err) {
     res.status(500).json({ error: err.message });

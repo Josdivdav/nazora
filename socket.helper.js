@@ -2236,16 +2236,19 @@ export const socket = _t(SERVER_URL, { transports: ["websocket"] });
 
 socket.on("connect", () => {});
 
-export function request(event, data = {}, callback) {
+export function request(event, data = {}, callback, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
     const _reqId =
       Math.random().toString(36).substring(2, 12) + Date.now().toString(36);
     const payload = { ...data, _reqId };
 
+    let timer = null;
+
     const onEvent = (response) => {
       if (response && response._reqId && response._reqId !== _reqId) {
         return;
       }
+      if (timer) clearTimeout(timer);
       socket.off(event, onEvent);
       if (response && response.error) {
         const err = new Error(
@@ -2267,6 +2270,17 @@ export function request(event, data = {}, callback) {
       }
       resolve(clean);
     };
+
+    timer = setTimeout(() => {
+      socket.off(event, onEvent);
+      const err = new Error(`FastDB request timeout for '${event}' after ${timeoutMs}ms`);
+      if (callback) {
+        try {
+          callback({ error: err.message });
+        } catch {}
+      }
+      reject(err);
+    }, timeoutMs);
 
     socket.on(event, onEvent);
     socket.emit(event, payload);
