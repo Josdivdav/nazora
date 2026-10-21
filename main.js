@@ -12,13 +12,18 @@ const db = new Database({
   apiKey: "K7RI5UnXq4h2femzx357fBSumYj7mSdodIuE",
 });
 
+let lastDbError = null;
+
 async function connectToFastDb() {
+  const targetUrl = db.socket?.io?.uri || process.env.DB_SERVER_URL || "default";
   try {
-    console.log(`Connecting to FastDB (databaseId: ${db.databaseId})...`);
+    console.log(`Connecting to FastDB (databaseId: ${db.databaseId}) at ${targetUrl}...`);
     await db.connect();
-    console.log(`Connected to FastDB (${db.databaseId})`);
+    lastDbError = null;
+    console.log(`Connected to FastDB (${db.databaseId}) at ${targetUrl}`);
   } catch (err) {
-    console.error("FastDB connection error on startup:", err.message);
+    lastDbError = err.message;
+    console.error(`FastDB connection error on startup to [${targetUrl}]:`, err.message);
     console.warn(
       "Tip: If running on the Oracle instance hosting FastDB, run with DB_SERVER_URL='http://127.0.0.1:5500' to avoid public IP hairpinning."
     );
@@ -503,9 +508,40 @@ app.get("/health", async (_req, res) => {
   res.json({
     status: "ok",
     databaseConnected: Boolean(db.access),
+    dbTargetUri: db.socket?.io?.uri || null,
+    dbEnvUrl: process.env.DB_SERVER_URL || null,
+    socketConnected: Boolean(db.socket?.connected),
+    lastDbError,
     port,
     uptime: process.uptime(),
   });
+});
+
+app.all("/api/db/reconnect", async (req, res) => {
+  const target = req.query.url || req.body?.url;
+  try {
+    if (target && db.socket?.io) {
+      console.log(`Reconnecting FastDB socket to: ${target}`);
+      db.socket.io.uri = target;
+      db.socket.disconnect();
+      db.socket.connect();
+    }
+    await db.connect();
+    lastDbError = null;
+    res.json({
+      success: true,
+      databaseConnected: true,
+      uri: db.socket?.io?.uri,
+    });
+  } catch (err) {
+    lastDbError = err.message;
+    res.status(500).json({
+      success: false,
+      databaseConnected: false,
+      error: err.message,
+      uri: db.socket?.io?.uri,
+    });
+  }
 });
 
 app.get("/api/users", async (_req, res) => {

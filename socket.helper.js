@@ -2232,7 +2232,8 @@ const SERVER_URL =
     ? process.env.DB_SERVER_URL
     : "http://devico.online:5500";
 
-export const socket = _t(SERVER_URL, { transports: ["websocket"] });
+export const DB_SERVER_URL = SERVER_URL;
+export const socket = _t(SERVER_URL, { transports: ["websocket", "polling"] });
 
 socket.on("connect", () => {});
 
