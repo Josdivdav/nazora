@@ -35,9 +35,31 @@ async function resolveFastDbUrl() {
   return "http://devico.online:5500";
 }
 
+let lastConnectErrorLog = 0;
+
+function attachDbSocketListeners(s) {
+  if (!s) return;
+  s.on("connect", () => {
+    console.log(`FastDB socket connected to [${s.io?.uri || "server"}]. Verifying database session...`);
+    db.connect()
+      .then(() => console.log("FastDB session verified."))
+      .catch((err) =>
+        console.error("FastDB reconnect error:", err.message)
+      );
+  });
+  s.on("connect_error", (err) => {
+    const now = Date.now();
+    if (now - lastConnectErrorLog > 10000) {
+      lastConnectErrorLog = now;
+      console.error(`FastDB socket connection error (${s.io?.uri}):`, err.message);
+    }
+  });
+}
+
 async function connectToFastDb() {
   const targetUrl = await resolveFastDbUrl();
-  setFastDbServerUrl(targetUrl);
+  const activeSocket = setFastDbServerUrl(targetUrl);
+  attachDbSocketListeners(activeSocket);
   try {
     console.log(`Connecting to FastDB (databaseId: ${db.databaseId}) at ${targetUrl}...`);
     await db.connect();
@@ -51,25 +73,6 @@ async function connectToFastDb() {
 
 // Connect asynchronously so server startup is never blocked
 connectToFastDb();
-
-let lastConnectErrorLog = 0;
-if (db.socket) {
-  db.socket.on("connect", () => {
-    console.log("FastDB socket connected. Verifying database session...");
-    db.connect()
-      .then(() => console.log("FastDB session verified."))
-      .catch((err) =>
-        console.error("FastDB reconnect error:", err.message)
-      );
-  });
-  db.socket.on("connect_error", (err) => {
-    const now = Date.now();
-    if (now - lastConnectErrorLog > 10000) {
-      lastConnectErrorLog = now;
-      console.error(`FastDB socket connection error (${db.socket?.io?.uri}):`, err.message);
-    }
-  });
-}
 
 async function ensureDbConnected() {
   if (!db.access) {

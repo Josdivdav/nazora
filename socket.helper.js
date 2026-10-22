@@ -2227,41 +2227,38 @@ Object.assign(_t, { Manager: Et, Socket: kt, io: _t, connect: _t });
 //   lt as protocol,
 // };
 
+export const io = _t;
+
 const SERVER_URL =
   (typeof process !== "undefined" && process.env && process.env.DB_SERVER_URL)
     ? process.env.DB_SERVER_URL
     : "http://devico.online:5500";
 
 export const DB_SERVER_URL = SERVER_URL;
-export const socket = _t(SERVER_URL, { transports: ["websocket", "polling"] });
-
-export function setFastDbServerUrl(newUrl) {
-  if (socket && socket.io && socket.io.uri !== newUrl) {
-    socket.io.uri = newUrl;
-    socket.disconnect();
-    socket.connect();
-  }
-}
-
-let fallbackAttempted = false;
-socket.on("connect_error", (err) => {
-  if (!fallbackAttempted && socket.io && !process.env.DB_SERVER_URL) {
-    const currentUri = socket.io.uri;
-    fallbackAttempted = true;
-    if (currentUri.includes("devico.online") || currentUri.includes("129.146.69.138")) {
-      console.warn(`[FastDB] Connection to ${currentUri} failed (${err.message}). Auto-switching to local loopback: http://127.0.0.1:5500...`);
-      setFastDbServerUrl("http://127.0.0.1:5500");
-    } else if (currentUri.includes("127.0.0.1") || currentUri.includes("localhost")) {
-      console.warn(`[FastDB] Connection to ${currentUri} failed (${err.message}). Auto-switching to remote fallback: http://devico.online:5500...`);
-      setFastDbServerUrl("http://devico.online:5500");
-    }
-  }
+export let socket = _t(SERVER_URL, {
+  transports: ["websocket", "polling"],
+  autoConnect: false,
 });
 
-socket.on("connect", () => {});
+export function setFastDbServerUrl(newUrl) {
+  if (newUrl) {
+    if (socket) {
+      socket.removeAllListeners();
+      socket.disconnect();
+    }
+    socket = _t(newUrl, {
+      transports: ["websocket", "polling"],
+      forceNew: true,
+      autoConnect: true,
+    });
+    return socket;
+  }
+  return socket;
+}
 
 export function request(event, data = {}, callback, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
+    const activeSocket = socket;
     const _reqId =
       Math.random().toString(36).substring(2, 12) + Date.now().toString(36);
     const payload = { ...data, _reqId };
@@ -2273,7 +2270,7 @@ export function request(event, data = {}, callback, timeoutMs = 8000) {
         return;
       }
       if (timer) clearTimeout(timer);
-      socket.off(event, onEvent);
+      activeSocket.off(event, onEvent);
       if (response && response.error) {
         const err = new Error(
           typeof response.error === "string"
@@ -2296,7 +2293,7 @@ export function request(event, data = {}, callback, timeoutMs = 8000) {
     };
 
     timer = setTimeout(() => {
-      socket.off(event, onEvent);
+      activeSocket.off(event, onEvent);
       const err = new Error(`FastDB request timeout for '${event}' after ${timeoutMs}ms`);
       if (callback) {
         try {
@@ -2306,8 +2303,8 @@ export function request(event, data = {}, callback, timeoutMs = 8000) {
       reject(err);
     }, timeoutMs);
 
-    socket.on(event, onEvent);
-    socket.emit(event, payload);
+    activeSocket.on(event, onEvent);
+    activeSocket.emit(event, payload);
   });
 }
 
@@ -2385,8 +2382,12 @@ export class Database {
     this.userEmail = userEmail;
     this.author = author;
     this.apiKey = apiKey;
-    this.socket = socketInstance || socket;
+    this.socketInstance = socketInstance;
     this.access = false;
+  }
+
+  get socket() {
+    return this.socketInstance || socket;
   }
 
   async connect(callback) {
