@@ -2235,6 +2235,29 @@ const SERVER_URL =
 export const DB_SERVER_URL = SERVER_URL;
 export const socket = _t(SERVER_URL, { transports: ["websocket", "polling"] });
 
+export function setFastDbServerUrl(newUrl) {
+  if (socket && socket.io && socket.io.uri !== newUrl) {
+    socket.io.uri = newUrl;
+    socket.disconnect();
+    socket.connect();
+  }
+}
+
+let fallbackAttempted = false;
+socket.on("connect_error", (err) => {
+  if (!fallbackAttempted && socket.io && !process.env.DB_SERVER_URL) {
+    const currentUri = socket.io.uri;
+    fallbackAttempted = true;
+    if (currentUri.includes("devico.online") || currentUri.includes("129.146.69.138")) {
+      console.warn(`[FastDB] Connection to ${currentUri} failed (${err.message}). Auto-switching to local loopback: http://127.0.0.1:5500...`);
+      setFastDbServerUrl("http://127.0.0.1:5500");
+    } else if (currentUri.includes("127.0.0.1") || currentUri.includes("localhost")) {
+      console.warn(`[FastDB] Connection to ${currentUri} failed (${err.message}). Auto-switching to remote fallback: http://devico.online:5500...`);
+      setFastDbServerUrl("http://devico.online:5500");
+    }
+  }
+});
+
 socket.on("connect", () => {});
 
 export function request(event, data = {}, callback, timeoutMs = 8000) {

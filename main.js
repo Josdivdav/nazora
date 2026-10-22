@@ -2,7 +2,7 @@ import http from "node:http";
 import express from "express";
 import cors from "cors";
 import { Server } from "socket.io";
-import { Database } from "./socket.helper.js";
+import { Database, setFastDbServerUrl } from "./socket.helper.js";
 import { upload } from "./src/func/file.upload.js";
 
 const db = new Database({
@@ -14,8 +14,30 @@ const db = new Database({
 
 let lastDbError = null;
 
+async function resolveFastDbUrl() {
+  if (process.env.DB_SERVER_URL) return process.env.DB_SERVER_URL;
+  try {
+    const isLocal = await new Promise((resolve) => {
+      const probe = http.get("http://127.0.0.1:5500/", { timeout: 400 }, (res) => {
+        resolve(res.statusCode === 200 || res.headers.server === "FastDB-CPP");
+      });
+      probe.on("error", () => resolve(false));
+      probe.on("timeout", () => {
+        probe.destroy();
+        resolve(false);
+      });
+    });
+    if (isLocal) {
+      console.log("[FastDB] Detected local FastDB instance on 127.0.0.1:5500. Using local loopback.");
+      return "http://127.0.0.1:5500";
+    }
+  } catch {}
+  return "http://devico.online:5500";
+}
+
 async function connectToFastDb() {
-  const targetUrl = db.socket?.io?.uri || process.env.DB_SERVER_URL || "default";
+  const targetUrl = await resolveFastDbUrl();
+  setFastDbServerUrl(targetUrl);
   try {
     console.log(`Connecting to FastDB (databaseId: ${db.databaseId}) at ${targetUrl}...`);
     await db.connect();
@@ -24,15 +46,13 @@ async function connectToFastDb() {
   } catch (err) {
     lastDbError = err.message;
     console.error(`FastDB connection error on startup to [${targetUrl}]:`, err.message);
-    console.warn(
-      "Tip: If running on the Oracle instance hosting FastDB, run with DB_SERVER_URL='http://127.0.0.1:5500' to avoid public IP hairpinning."
-    );
   }
 }
 
 // Connect asynchronously so server startup is never blocked
 connectToFastDb();
 
+let lastConnectErrorLog = 0;
 if (db.socket) {
   db.socket.on("connect", () => {
     console.log("FastDB socket connected. Verifying database session...");
@@ -43,7 +63,11 @@ if (db.socket) {
       );
   });
   db.socket.on("connect_error", (err) => {
-    console.error("FastDB socket connection error:", err.message);
+    const now = Date.now();
+    if (now - lastConnectErrorLog > 10000) {
+      lastConnectErrorLog = now;
+      console.error(`FastDB socket connection error (${db.socket?.io?.uri}):`, err.message);
+    }
   });
 }
 
