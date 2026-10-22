@@ -56,12 +56,39 @@ function attachDbSocketListeners(s) {
   });
 }
 
+async function waitForSocket(s, timeoutMs = 4000) {
+  if (s.connected) return true;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    s.once("connect", () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+    s.once("connect_error", () => {
+      clearTimeout(timer);
+      resolve(false);
+    });
+  });
+}
+
 async function connectToFastDb() {
-  const targetUrl = await resolveFastDbUrl();
-  const activeSocket = setFastDbServerUrl(targetUrl);
+  let targetUrl = await resolveFastDbUrl();
+  let activeSocket = setFastDbServerUrl(targetUrl);
   attachDbSocketListeners(activeSocket);
+
+  console.log(`Connecting to FastDB (databaseId: ${db.databaseId}) at ${targetUrl}...`);
+  const isConnected = await waitForSocket(activeSocket, 3000);
+
+  // If local 127.0.0.1 failed to connect WebSocket, auto-try remote devico.online
+  if (!isConnected && targetUrl === "http://127.0.0.1:5500") {
+    console.warn("[FastDB] Local 127.0.0.1:5500 WebSocket did not connect. Trying http://devico.online:5500...");
+    targetUrl = "http://devico.online:5500";
+    activeSocket = setFastDbServerUrl(targetUrl);
+    attachDbSocketListeners(activeSocket);
+    await waitForSocket(activeSocket, 3000);
+  }
+
   try {
-    console.log(`Connecting to FastDB (databaseId: ${db.databaseId}) at ${targetUrl}...`);
     await db.connect();
     lastDbError = null;
     console.log(`Connected to FastDB (${db.databaseId}) at ${targetUrl}`);
@@ -128,7 +155,7 @@ const io = new Server(server, {
   },
 });
 
-const port = Number(process.env.PORT) || 5500;
+const port = Number(process.env.PORT) || 8080;
 
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));

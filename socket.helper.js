@@ -2236,7 +2236,7 @@ const SERVER_URL =
 
 export const DB_SERVER_URL = SERVER_URL;
 export let socket = _t(SERVER_URL, {
-  transports: ["websocket", "polling"],
+  transports: ["websocket"],
   autoConnect: false,
 });
 
@@ -2247,7 +2247,7 @@ export function setFastDbServerUrl(newUrl) {
       socket.disconnect();
     }
     socket = _t(newUrl, {
-      transports: ["websocket", "polling"],
+      transports: ["websocket"],
       forceNew: true,
       autoConnect: true,
     });
@@ -2264,13 +2264,20 @@ export function request(event, data = {}, callback, timeoutMs = 8000) {
     const payload = { ...data, _reqId };
 
     let timer = null;
+    let cleanedUp = false;
+
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      if (timer) clearTimeout(timer);
+      activeSocket.off(event, onEvent);
+    };
 
     const onEvent = (response) => {
       if (response && response._reqId && response._reqId !== _reqId) {
         return;
       }
-      if (timer) clearTimeout(timer);
-      activeSocket.off(event, onEvent);
+      cleanup();
       if (response && response.error) {
         const err = new Error(
           typeof response.error === "string"
@@ -2293,8 +2300,10 @@ export function request(event, data = {}, callback, timeoutMs = 8000) {
     };
 
     timer = setTimeout(() => {
-      activeSocket.off(event, onEvent);
-      const err = new Error(`FastDB request timeout for '${event}' after ${timeoutMs}ms`);
+      cleanup();
+      const err = new Error(
+        `FastDB request timeout for '${event}' after ${timeoutMs}ms (socket connected: ${activeSocket.connected}, uri: ${activeSocket.io?.uri})`
+      );
       if (callback) {
         try {
           callback({ error: err.message });
@@ -2304,7 +2313,18 @@ export function request(event, data = {}, callback, timeoutMs = 8000) {
     }, timeoutMs);
 
     activeSocket.on(event, onEvent);
-    activeSocket.emit(event, payload);
+
+    const send = () => {
+      if (!cleanedUp) {
+        activeSocket.emit(event, payload);
+      }
+    };
+
+    if (activeSocket.connected) {
+      send();
+    } else {
+      activeSocket.once("connect", send);
+    }
   });
 }
 
