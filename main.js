@@ -128,7 +128,17 @@ const port = Number(process.env.PORT) || 8080;
 
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
-app.use("/uploads", express.static("uploads"));
+app.use(
+  "/uploads",
+  cors(),
+  express.static("uploads", {
+    maxAge: "30d",
+    setHeaders: (res) => {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    },
+  })
+);
 
 // Color palette for avatars
 const AVATAR_COLORS = [
@@ -345,21 +355,25 @@ async function getMessagesForChat(chatId) {
 // ============================================================================
 // FILE UPLOAD ENDPOINT (MULTER)
 // ============================================================================
-app.post("/api/upload", upload.single("image"), (req, res) => {
-  try {
-    if (!req.file) {
+app.post("/api/upload", (req, res) => {
+  upload.any()(req, res, (err) => {
+    if (err) {
+      console.error("[Multer Upload Error]:", err.message);
+      return res.status(400).json({ error: err.message || "File upload failed" });
+    }
+    const file = req.files?.[0] || req.file;
+    if (!file) {
       return res.status(400).json({ error: "No file provided" });
     }
-    const url = `/uploads/${req.file.filename}`;
+    const url = `/uploads/${file.filename}`;
+    console.log(`[Upload Success] File saved: ${file.filename} (${file.size} bytes) -> ${url}`);
     res.json({
       url,
-      filename: req.file.filename,
-      mimetype: req.file.mimetype,
-      size: req.file.size,
+      filename: file.filename,
+      mimetype: file.mimetype,
+      size: file.size,
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message || "File upload failed" });
-  }
+  });
 });
 
 // ============================================================================
