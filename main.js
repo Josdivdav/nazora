@@ -2,131 +2,100 @@ import http from "node:http";
 import express from "express";
 import cors from "cors";
 import { Server } from "socket.io";
-import { Database, setFastDbServerUrl } from "./socket.helper.js";
+import firebaseDb, { adminApp } from "./src/lib/firebase.js";
 import { upload } from "./src/func/file.upload.js";
 
-const db = new Database({
-  databaseId: "c1100cc1-6193-4a30-bf4b-e8dc212243f0",
-  userEmail: "joshuadivine985@gmail.com",
-  author: "0600b36a-be8d-4010-a468-374b78d77a37",
-  apiKey: "K7RI5UnXq4h2femzx357fBSumYj7mSdodIuE",
-});
-
-let lastDbError = null;
-
-async function resolveFastDbUrl() {
-  if (process.env.DB_SERVER_URL) return process.env.DB_SERVER_URL;
-  try {
-    const isLocal = await new Promise((resolve) => {
-      const probe = http.get("http://127.0.0.1:5500/", { timeout: 400 }, (res) => {
-        resolve(res.statusCode === 200 || res.headers.server === "FastDB-CPP");
-      });
-      probe.on("error", () => resolve(false));
-      probe.on("timeout", () => {
-        probe.destroy();
-        resolve(false);
-      });
-    });
-    if (isLocal) {
-      console.log("[FastDB] Detected local FastDB instance on 127.0.0.1:5500. Using local loopback.");
-      return "http://127.0.0.1:5500";
-    }
-  } catch {}
-  return "http://devico.online:5500";
-}
-
-let lastConnectErrorLog = 0;
-
-function attachDbSocketListeners(s) {
-  if (!s) return;
-  s.on("connect", () => {
-    console.log(`FastDB socket connected to [${s.io?.uri || "server"}]. Verifying database session...`);
-    db.connect()
-      .then(() => console.log("FastDB session verified."))
-      .catch((err) =>
-        console.error("FastDB reconnect error:", err.message)
-      );
-  });
-  s.on("connect_error", (err) => {
-    const now = Date.now();
-    if (now - lastConnectErrorLog > 10000) {
-      lastConnectErrorLog = now;
-      console.error(`FastDB socket connection error (${s.io?.uri}):`, err.message);
-    }
-  });
-}
-
-async function waitForSocket(s, timeoutMs = 4000) {
-  if (s.connected) return true;
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(false), timeoutMs);
-    s.once("connect", () => {
-      clearTimeout(timer);
-      resolve(true);
-    });
-    s.once("connect_error", () => {
-      clearTimeout(timer);
-      resolve(false);
-    });
-  });
-}
-
-async function connectToFastDb() {
-  let targetUrl = await resolveFastDbUrl();
-  let activeSocket = setFastDbServerUrl(targetUrl);
-  attachDbSocketListeners(activeSocket);
-
-  console.log(`Connecting to FastDB (databaseId: ${db.databaseId}) at ${targetUrl}...`);
-  const isConnected = await waitForSocket(activeSocket, 3000);
-
-  // If local 127.0.0.1 failed to connect WebSocket, auto-try remote devico.online
-  if (!isConnected && targetUrl === "http://127.0.0.1:5500") {
-    console.warn("[FastDB] Local 127.0.0.1:5500 WebSocket did not connect. Trying http://devico.online:5500...");
-    targetUrl = "http://devico.online:5500";
-    activeSocket = setFastDbServerUrl(targetUrl);
-    attachDbSocketListeners(activeSocket);
-    await waitForSocket(activeSocket, 3000);
-  }
-
-  try {
-    await db.connect();
-    lastDbError = null;
-    console.log(`Connected to FastDB (${db.databaseId}) at ${targetUrl}`);
-  } catch (err) {
-    lastDbError = err.message;
-    console.error(`FastDB connection error on startup to [${targetUrl}]:`, err.message);
-  }
-}
-
-// Connect asynchronously so server startup is never blocked
-connectToFastDb();
-
-async function ensureDbConnected() {
-  if (!db.access) {
-    try {
-      await db.connect();
-    } catch {
-      // Reconnection handled via timeout in socket.helper
-    }
-  }
-}
+console.log("[Firebase] Backend initialized with Realtime Database (goodvibes-9cde0)");
 
 /**
- * Normalizes FastDB .get() results into an array of documents.
+ * Universal adapter mapping collection/doc operations to Firebase Realtime Database.
+ */
+const db = {
+  ref: (path) => firebaseDb.ref(path),
+  collection(name) {
+    return {
+      async get() {
+        return getCollectionDocs(name);
+      },
+      async add(data) {
+        try {
+          const newRef = firebaseDb.ref(name).push();
+          const id = newRef.key;
+          const fullData = { ...data, _id: id, id, uid: data.uid || id };
+          await newRef.set(fullData);
+          return fullData;
+        } catch (err) {
+          console.error(`Firebase RTDB add error on '${name}':`, err.message);
+          return { ...data, _id: Date.now().toString() };
+        }
+      },
+      doc(id) {
+        const path = `${name}/${id}`;
+        return {
+          async get() {
+            try {
+              const snap = await firebaseDb.ref(path).once("value");
+              const val = snap.val();
+              if (!val) return null;
+              return { _id: id, ...val };
+            } catch (err) {
+              console.error(`Firebase RTDB doc get error on '${path}':`, err.message);
+              return null;
+            }
+          },
+          async set(data) {
+            try {
+              await firebaseDb.ref(path).set(data);
+              return data;
+            } catch (err) {
+              console.error(`Firebase RTDB doc set error on '${path}':`, err.message);
+              return data;
+            }
+          },
+          async update(data) {
+            try {
+              await firebaseDb.ref(path).update(data);
+              return data;
+            } catch (err) {
+              console.error(`Firebase RTDB doc update error on '${path}':`, err.message);
+              return data;
+            }
+          },
+          async delete() {
+            try {
+              await firebaseDb.ref(path).remove();
+            } catch (err) {
+              console.error(`Firebase RTDB doc delete error on '${path}':`, err.message);
+            }
+          },
+        };
+      },
+    };
+  },
+};
+
+/**
+ * Normalizes Firebase RTDB .once('value') results into an array of documents.
  */
 async function getCollectionDocs(collectionName) {
-  await ensureDbConnected();
-  const raw = await db.collection(collectionName).get();
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw;
-  if (typeof raw === "object") {
-    return Object.entries(raw).map(([key, val]) =>
-      val && typeof val === "object"
-        ? { _id: key, ...val }
-        : { _id: key, value: val }
-    );
+  try {
+    const snap = await firebaseDb.ref(collectionName).once("value");
+    const val = snap.val();
+    if (!val) return [];
+    if (Array.isArray(val)) {
+      return val.filter(Boolean).map((item, idx) => ({
+        _id: item?.uid || item?._id || item?.id || String(idx),
+        ...(typeof item === "object" && item !== null ? item : { value: item }),
+      }));
+    }
+    return Object.entries(val).map(([key, item]) => ({
+      _id: key,
+      ...(item && typeof item === "object" ? item : { value: item }),
+    }));
+  } catch (err) {
+    console.error(`Firebase RTDB read error on '${collectionName}':`, err.message);
+    return [];
   }
-  return [];
 }
 
 /**
@@ -561,41 +530,12 @@ app.post("/api/auth/login", async (req, res) => {
 app.get("/health", async (_req, res) => {
   res.json({
     status: "ok",
-    databaseConnected: Boolean(db.access),
-    dbTargetUri: db.socket?.io?.uri || null,
-    dbEnvUrl: process.env.DB_SERVER_URL || null,
-    socketConnected: Boolean(db.socket?.connected),
-    lastDbError,
+    database: "firebase-rtdb",
+    databaseURL: "https://goodvibes-9cde0-default-rtdb.firebaseio.com",
+    hasServiceAccount: Boolean(adminApp?.options?.credential),
     port,
     uptime: process.uptime(),
   });
-});
-
-app.all("/api/db/reconnect", async (req, res) => {
-  const target = req.query.url || req.body?.url;
-  try {
-    if (target && db.socket?.io) {
-      console.log(`Reconnecting FastDB socket to: ${target}`);
-      db.socket.io.uri = target;
-      db.socket.disconnect();
-      db.socket.connect();
-    }
-    await db.connect();
-    lastDbError = null;
-    res.json({
-      success: true,
-      databaseConnected: true,
-      uri: db.socket?.io?.uri,
-    });
-  } catch (err) {
-    lastDbError = err.message;
-    res.status(500).json({
-      success: false,
-      databaseConnected: false,
-      error: err.message,
-      uri: db.socket?.io?.uri,
-    });
-  }
 });
 
 app.get("/api/users", async (_req, res) => {
